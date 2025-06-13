@@ -220,9 +220,9 @@ async def handle_query(payload: QueryRequest):
     # else:
     #     matches = search_typesense_with_vector(embedding)
     
-    matches = search_typesense_with_vector(embedding)
+    updated_matches = search_typesense_with_vector(embedding)
 
-    updated_matches = fetch_surrounding_context(matches)
+    # updated_matches = fetch_surrounding_context(matches)
     
     gpt_answer = ask_gpt(payload.question, updated_matches, payload.image)
 

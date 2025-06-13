@@ -180,7 +180,7 @@ def ask_gpt(query: str, matches: list, image_base64: str = None) -> str:
 
     if image_base64:
         messages = [
-            {"role": "system", "content": "You are an assistant that answers questions using the given context."},
+            {"role": "system", "content": "You are an assistant that answers questions using the given context. If the context does not have any answer, tell that you do not have the answer"},
             {"role": "user", "content": f"Context:\n{context_str}\n\nQuestion: {query}"},
             {
                 "role": "user",
@@ -215,11 +215,13 @@ async def default():
 @app.post("/api")
 async def handle_query(payload: QueryRequest):
     embedding = get_embedding(payload.question)
-    if(payload.link):
-        matches = search_typesense_with_link(payload.link,embedding)
-    else:
-        matches = search_typesense_with_vector(embedding)
+    # if(payload.link):
+    #     matches = search_typesense_with_link(payload.link,embedding)
+    # else:
+    #     matches = search_typesense_with_vector(embedding)
     
+    matches = search_typesense_with_vector(embedding)
+
     updated_matches = fetch_surrounding_context(matches)
     
     gpt_answer = ask_gpt(payload.question, updated_matches, payload.image)

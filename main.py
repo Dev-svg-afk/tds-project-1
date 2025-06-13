@@ -167,7 +167,7 @@ def fetch_surrounding_context(matches: list, window: int = 2) -> list:
                     except Exception as e:
                         print(f"Could not fetch {new_url}: {e}")
 
-    return updated_matches
+    return matches if updated_matches==[] else updated_matches
 
 def ask_gpt(query: str, matches: list, image_base64: str = None) -> str:
     context_str = "\n".join([m["content"] for m in matches])

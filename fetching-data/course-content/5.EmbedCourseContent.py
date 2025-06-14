@@ -25,7 +25,7 @@ try:
     typesense_client.collections.create({
       "name": "course-content-book",
       "fields": [
-          {"name": "url", "type": "string"},
+          {"name": "url", "type": "string", "filter": True },
           {"name": "content", "type": "string"},
           {"name": "embedding", "type": "float[]", "num_dim": 1536}
       ],

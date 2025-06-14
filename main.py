@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Query
+from fastapi import FastAPI
 from pydantic import BaseModel
 import typesense
 from typing import List, Optional
@@ -9,7 +9,9 @@ from fastapi.middleware.cors import CORSMiddleware
 import base64
 import numpy as np
 import re
-
+import base64
+import imghdr
+import os
 
 load_dotenv()
 
@@ -92,6 +94,7 @@ def search_typesense_with_vector(embedding: list, k=2) -> list:
                 sim = cosine_sim(embedding, doc_embedding)
                 all_hits.append({
                     "url": doc.get("url"),
+                    "parent_url": doc["parent_url"] if collection=="discourse-book" else None,
                     "content": doc["content"],
                     "similarity": sim
                 })
@@ -101,103 +104,130 @@ def search_typesense_with_vector(embedding: list, k=2) -> list:
 
 def search_typesense_with_link(link: str, query_embedding: list) -> list:
     all_hits = []
+    search_config = None
 
-    collections = ["discourse-book", "course-content-book"]
+    if link.startswith("https://tds.s-anand.net/#/"):
+        collection = "course-content-book"
+        search_config = {
+            "q": "*",
+            "query_by": "content",
+            "filter_by": f"url:={link}"
+        }
 
-    for collection in collections:
-        # query_by_fields = "url,parent_url" if collection == "discourse-book" else "url"
-        query_by_fields = "url"
-        try:
-            result = typesense_client.collections[collection].documents.search({
-                "q": link,
-                "query_by": query_by_fields
-            })
+    elif link.startswith("https://discourse.onlinedegree.iitm.ac.in/t/"):
+        collection = "discourse-book"
+        search_config = {
+            "q": "*",
+            "query_by": "content",
+            "filter_by": f"url:={link} || parent_url:={link}"
+        }
 
-            for hit in result.get("hits", []):
-                doc = hit["document"]
-                doc_embedding = doc.get("embedding")
-                if doc_embedding:
-                    sim = cosine_sim(query_embedding, doc_embedding)
-                    all_hits.append({
-                        "url": doc["url"],
-                        "content": doc["content"],
-                        "similarity": sim
-                    })
+    else:
+        return [{"error": "link not supported"}]
 
-        except Exception as e:
-            print(f"Error searching link in {collection}: {e}")
+    try:
+        result = typesense_client.collections[collection].documents.search(search_config)
 
-    sorted_hits = sorted(all_hits, key=lambda x: x["similarity"], reverse=True)
-    return sorted_hits
+        for hit in result.get("hits", []):
+            doc = hit.get("document", {})
+            doc_embedding = doc.get("embedding")
 
-def fetch_surrounding_context(matches: list, window: int = 2) -> list:
-    updated_matches = []
+            if doc_embedding:
+                sim = cosine_sim(query_embedding, doc_embedding)
+                all_hits.append({
+                    "url": doc.get("url"),
+                    "parent_url": doc.get("parent_url") if collection=="discourse-book" else None,
+                    "content": doc.get("content"),
+                    "similarity": sim
+                })
 
-    for match in matches:
+    except Exception as e:
+        print(f"Error searching link in {collection}: {e}")
+        return [{"error": str(e)}]
+
+    return sorted(all_hits, key=lambda x: x["similarity"], reverse=True)[:2]
+
+def fetch_surrounding_context(matches: list, link: str = "", window: int = 2) -> list:
+    
+    n = len(matches)
+    for i in range(n):
+        match = matches[i]
         url = match.get("url")
-        content = match.get("content")
-        updated_matches.append({"url": url, "content": content})
 
         discourse_prefix = "https://discourse.onlinedegree.iitm.ac.in/t/"
-        if url and url.startswith(discourse_prefix):
-            m = re.match(rf"{re.escape(discourse_prefix)}([^/]+)/(\d+)/(\d+)$", url)
-            if m:
-                slug = m.group(1)
-                topic_id = m.group(2)
-                post_id = int(m.group(3))
+        m = re.match(r"^https://discourse\.onlinedegree\.iitm\.ac\.in/t/([^/]+)/(\d+)/(\d+)$", url)
+        if m:
+            slug = m.group(1)
+            topic_id = m.group(2)
+            post_id = int(m.group(3))
 
-                for offset in range(-window, window + 1):
-                    if offset == 0:
-                        continue
-                    new_post_id = post_id + offset
-                    new_url = f"{discourse_prefix}{slug}/{topic_id}/{new_post_id}"
+            for offset in range(-window, window + 1):
+                if offset == 0:
+                    continue
+                new_post_id = post_id + offset
+                new_url = f"{discourse_prefix}{slug}/{topic_id}/{new_post_id}"
 
-                    try:
-                        result = typesense_client.collections["discourse-book"].documents.search({
-                            "q": new_url,
-                            "query_by": "url"
-                        })
-                        for hit in result.get("hits", []):
-                            doc = hit["document"]
-                            if doc.get("url") == new_url:
-                                updated_matches.append({
-                                    "url": doc["url"],
-                                    "content": doc["content"]
-                                })
-                    except Exception as e:
-                        print(f"Could not fetch {new_url}: {e}")
+                try:
+                    result = typesense_client.collections["discourse-book"].documents.search({
+                        "q": "*",
+                        "query_by": "content",
+                        "filter_by": f"url:={new_url}"
+                    })
+                    for hit in result.get("hits", []):
+                        doc = hit["document"]
 
-    return matches if updated_matches==[] else updated_matches
+                        if doc.get("url") == new_url:
+                            matches.append({
+                                "url": doc["url"],
+                                "parent_url": doc["parent_url"],
+                                "content": doc["content"]
+                            })
+                except Exception as e:
+                    print(f"Could not fetch {new_url}: {e}")
 
-def ask_gpt(query: str, matches: list, image_base64: str = None) -> str:
+    return matches
+
+def get_image_mimetype(base64_string):
+    # Decode base64 string
+    image_data = base64.b64decode(base64_string)
+
+    # Option 1: imghdr (basic)
+    img_type = imghdr.what(None, h=image_data)  # e.g., 'jpeg', 'png', 'webp'
+    mime_type = f'image/{img_type}' if img_type else 'application/octet-stream'
+    
+    return mime_type # eg. image/webp
+
+def ask_gpt(query: str, matches: list, image_input: str = None) -> str:
     context_str = "\n".join([m["content"] for m in matches])
 
     url = "http://aiproxy.sanand.workers.dev/openai/v1/chat/completions"
-    headers={
+    headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
 
-    if image_base64:
+    if image_input:
+        mime_type = get_image_mimetype(image_input)
+
         messages = [
             {"role": "system", "content": "You are an assistant that answers questions using the given context. If the context does not have any answer, tell that you do not have the answer"},
             {"role": "user", "content": f"Context:\n{context_str}\n\nQuestion: {query}"},
             {
                 "role": "user",
                 "content": [
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}},
-                    {"type": "text", "text": f"The image is attached above. Use this image along with the context to answer the question."}
+                    {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{image_input}"}},
+                    {"type": "text", "text": "The image is attached above. Use this image along with the context to answer the question."}
                 ]
             }
         ]
 
     else:
         messages = [
-            {"role": "system", "content": "You are an assistant that answers questions using the given context. If the context does not have any answer, tell that you do not have the answer"},   
+            {"role": "system", "content": "You are an assistant that answers questions using the given context. If the context does not have any answer, tell that you do not have the answer"},
             {"role": "user", "content": f"Context:\n{context_str}\n\nQuestion: {query}"}
         ]
 
-    data={
+    data = {
         "model": "gpt-4o-mini",
         "messages": messages
     }
@@ -217,12 +247,14 @@ async def handle_query(payload: QueryRequest):
     embedding = get_embedding(payload.question)
     if(payload.link):
         matches = search_typesense_with_link(payload.link,embedding)
+        more_matches = fetch_surrounding_context(matches,payload.link)
     else:
         matches = search_typesense_with_vector(embedding)
-
-    updated_matches = fetch_surrounding_context(matches)
+        more_matches = fetch_surrounding_context(matches)
     
-    gpt_answer = ask_gpt(payload.question, updated_matches, payload.image)
+    gpt_answer = ask_gpt(payload.question, more_matches, payload.image)
+
+    links = [{"content":x["content"], "url":x["parent_url"] if x["parent_url"] else x["url"]} for x in more_matches[:3]]
 
     return {"answer": gpt_answer["content"], 
-            "links": updated_matches}
+            "links": links}

@@ -4,3 +4,4 @@ python-dotenv
 requests
 typesense
 numpy
+pydantic

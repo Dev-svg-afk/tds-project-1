@@ -254,7 +254,7 @@ async def handle_query(payload: QueryRequest):
     
     gpt_answer = ask_gpt(payload.question, more_matches, payload.image)
 
-    links = [{"content":x["content"], "url":x["parent_url"] if x["parent_url"] else x["url"]} for x in more_matches[:3]]
+    links = [{"url":x["parent_url"] if x["parent_url"] else x["url"] , "text":x["content"]} for x in more_matches[:3]]
 
     return {"answer": gpt_answer["content"], 
             "links": links}
